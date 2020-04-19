@@ -8,6 +8,15 @@ from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestRegressor
 import matplotlib.pyplot as plt
 
+# We can play with the constants below to see how far we can accurately forecast the growth rate of counties by state
+# CONSTANTS
+# ____________________________________________________________
+
+PREDICTION_INTERVAL = 28  # 4 weeks
+TARGET_INTERVAL = 14  # 2 weeks
+REGRESSION_INTERVAL = PREDICTION_INTERVAL + TARGET_INTERVAL
+
+#______________________________________________________________
 
 def retrieve_data(county_level_path, state_level_path, timeseries_cases_path, timeseries_deaths_path):
     if time.time() - os.path.getmtime(county_level_path) > 86400:
@@ -30,17 +39,20 @@ def retrieve_data(county_level_path, state_level_path, timeseries_cases_path, ti
         print('Finished downloading raw data.')
 
 
+# TODO:
+# Convert date into days since first case
+# We will use MAPE, if we can, to measure success
+# (https://medium.com/making-sense-of-data/time-series-next-value-prediction-using-regression-over-a-rolling-window-228f0acae363
 # The idea is that we can build regression models based on different features, or attributes, recorded for each county
 # in each state or province.
 
-# TODO:
-# Convert date into days since first case
-#
 
 def build_regression_models(timeseries_dataset):
     datasets_bystate_index = []  # Used to index data frames stored in datasets_bystate
     datasets_bystate = []
-    responses_bystate = []  # Used to keep track of the predictions of each random forest for each state
+    responses_bystate = []  # Used to keep track random forest models for each state
+
+    # Data Pre-processing
 
     for state in timeseries_dataset.Province_State.unique():
         datasets_bystate_index.append(state)
@@ -50,21 +62,24 @@ def build_regression_models(timeseries_dataset):
         dataset = datasets_bystate[state_index].drop(columns=['UID', 'iso2', 'iso3', 'code3', 'FIPS',
                                                               'Admin2', 'Province_State', 'Country_Region', 'Lat',
                                                               'Long_', 'Combined_Key'])
-        timestamp_models = []
-        for timestamp in range(3, datasets_bystate[state_index].shape[1]):
-            rfr = RandomForestRegressor(random_state=0)
 
-            X, y = dataset.iloc[:, 0:timestamp-1], dataset.iloc[:, timestamp-1]
-            if X.shape[0] >= 7:
-                X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=.2)
-            elif X.shape[0] == 1:
-                X_train, y_train = X, y
-            else:
-                X_train, X_test = X.iloc[0:dataset.shape[0] - 1], X.iloc[dataset.shape[0] - 1]
-                y_train, y_test = y.iloc[0:dataset.shape[0] - 1], y.iloc[dataset.shape[0] - 1]
+        print("Building model for state: " + datasets_bystate_index[state_index])
 
-            rfr.fit(X_train, y_train)
-            timestamp_models.append(rfr)
+        # Transforming and cleaning data. Check to see if the prediction and target intervals are available for the
+        # county being examined by the for-loop. The interval of time needed to make an accurate prediction is
+        # REGRESSION_INTERVAL = PREDICTION_INTERVAL + TARGET_INTERVAL. If the county examined has not had cases
+        # for the requisite amount of time specified by REGRESSION_INTERVAL, then it will be dropped from the model.
+        # We will test the performance of a range of rolling windows in days (1, PREDICTION_INTERVAL) and choose the
+        # model with the best performance
+
+        regression_models_bystate = []
+        for county in range(0, datasets_bystate[state_index].shape[0]):
+            regression_models_byrollingwindow = []
+
+
+
+
+
         responses_bystate[state_index] = timestamp_models
 
     return responses_bystate
