@@ -13,8 +13,9 @@ import matplotlib.pyplot as plt
 # CONSTANTS
 # ____________________________________________________________
 
-PREDICTOR_INTERVAL = 28  # 4 weeks
-FORECASTING_INTERVAL = 14  # 2 weeks
+
+PREDICTOR_INTERVAL = 14  # 2 weeks
+FORECASTING_INTERVAL = 7  # 1 week
 REGRESSION_INTERVAL = PREDICTOR_INTERVAL + FORECASTING_INTERVAL
 
 
@@ -43,103 +44,109 @@ def retrieve_data(timeseries_cases_path, timeseries_deaths_path):
 # in each state or province.
 
 
-# Shift the day the cases began in the county to the first column of the data frame
-
-def shift_cases(data_row):
-    i = data_row.shape[1]
-
-    while data_row[0, i] != 0:
-        i -= 1
-
-    for val in range(i, data_row.shape[1]):
-        data_row[0, val - i] = data_row[0, val]
-
-    return data_row
-
-
 def build_regression_models(timeseries_dataset):
     datasets_bystate_index = []  # Used to index data frames stored in datasets_bystate
     datasets_bystate = []
     regression_model_bystate = []  # Used to keep track random forest models for each state
 
-    # Data Pre-processing
+    # Transforming and cleaning data. Check to see if the prediction and target intervals are available for the
+    # county being examined by the for-loop. The interval of time needed to make an accurate prediction is
+    # REGRESSION_INTERVAL = PREDICTOR_INTERVAL + FORECASTING_INTERVAL. If the county examined has not had cases
+    # for the requisite amount of time specified by REGRESSION_INTERVAL, then it will be dropped from the model.
 
     for state in timeseries_dataset.Province_State.unique():
-        datasets_bystate_index.append(state)
-        datasets_bystate.append(timeseries_dataset.loc[timeseries_dataset['Province_State'] == state])
+        print("Building model for state: " + state)
 
-    for state_index in range(len(datasets_bystate)):
-        state_dataset = datasets_bystate[state_index].drop(columns=['UID', 'iso2', 'iso3', 'code3', 'FIPS',
-                                                              'Admin2', 'Province_State', 'Country_Region', 'Lat',
-                                                              'Long_', 'Combined_Key'])
+        # Set index and labels
+        state_dataset = timeseries_dataset.loc[timeseries_dataset['Province_State'] == state].copy()
+        state_dataset.index = pd.RangeIndex(len(state_dataset.index))  # Reset index for proper func. of iloc
 
-        print("Building model for state: " + datasets_bystate_index[state_index])
+        # Drop unneeded attributes
+        state_dataset.drop(columns=['UID', 'iso2', 'iso3', 'code3', 'FIPS',
+                                    'Admin2', 'Province_State', 'Country_Region', 'Lat',
+                                    'Long_', 'Combined_Key'], inplace=True)
+        column_names = []  # Store new column names
+        for col in range(1, state_dataset.shape[1] + 1):
+            column_names.append("Day " + str(col))
+        state_dataset.columns = column_names
 
-        # Transforming and cleaning data. Check to see if the prediction and target intervals are available for the
-        # county being examined by the for-loop. The interval of time needed to make an accurate prediction is
-        # REGRESSION_INTERVAL = PREDICTOR_INTERVAL + FORECASTING_INTERVAL. If the county examined has not had cases
-        # for the requisite amount of time specified by REGRESSION_INTERVAL, then it will be dropped from the model.
-        # We will test the performance of a recursive multi-step forecasting model built by RandomForestRegressor.
+        if state_dataset.shape[0] < 6:
+            print("Unable to build model for state:" + state + " due to an insufficient number counties.")
 
-        # We keep track of the models we have built for each time step in the forecasting interval so that we can
-        # analyze the performance of each model collectively
+        else:
+            county = 0
+            while county < state_dataset.shape[0]:
+                has_dropped = False  # Control variable
 
-        regression_model_bytimestep = []
-        if state_dataset.shape[0] < 8:
-
-            for county in range(0, state_dataset.shape[0]):
+                # Here, we are counting zeros and adding them to lag_count to shift lag_count columns so that
+                # the data is in the format of (day 1, day 2, day 3) where each day is a day that the county
+                # is infected with the virus.
 
                 lag_count = 0  # Num. of days the county has NOT been infected.
                 for date in range(state_dataset.shape[1]):
-
-                    # Here, we are counting zeros and adding them to lag_count to shift lag_count columns so that
-                    # the data is in the format of (day 1, day 2, day 3) where each day is a day that the county
-                    # is infected with the virus.
-                    if state_dataset.loc[county, date] == 0:
+                    if state_dataset.iloc[county, date] == 0:
                         lag_count += 1
-                    elif lag_count - state_dataset.shape[1] < REGRESSION_INTERVAL:
-                        state_dataset.drop(state_dataset.index[county])
-                        print("Unable to build model for state:" + datasets_bystate_index[
-                            state_index]) + " due to insufficient" \
-                                            "data."
+                    elif state_dataset.shape[1] - lag_count < REGRESSION_INTERVAL:
+                        state_dataset.drop(state_dataset.index[county], inplace=True)
+                        state_dataset.index = pd.RangeIndex(len(state_dataset.index))
+                        has_dropped = True
                         break
-                    else:
-                        shifted_row = shift_cases(state_dataset.loc[county])
-                        state_dataset.loc[county] == shifted_row.loc[0]
+                    elif state_dataset.iloc[county, 0] == 0:
+                        # Shift the day the cases began in the county to the first column of the data frame
+                        for val in range(lag_count, state_dataset.shape[1]):
+                            state_dataset.iloc[county, val - lag_count] = state_dataset.iloc[county, val]
+                            state_dataset.iloc[county, val] = 0  # To replace shifted values with 0
                         break
+                    # Check to see if we have a county full of no cases... for some reason these are in here!
+                    if date == state_dataset.shape[1] - 1 and state_dataset.iloc[county].sum() == 0:
+                        state_dataset.drop(state_dataset.index[county], inplace=True)
+                        state_dataset.index = pd.RangeIndex(len(state_dataset.index))
+                        has_dropped = True
+
+                if not has_dropped:
+                    county += 1
+
+                if state_dataset.shape[0] < 6:
+                    break
+
+        if state_dataset.shape[0] >= 6:
+            state_dataset.drop(state_dataset.iloc[:, -(state_dataset.shape[1] - REGRESSION_INTERVAL):], axis='columns',
+                               inplace=True)
+            datasets_bystate.append(state_dataset)
+            datasets_bystate_index.append(state)
+
+    # Building regression model via multistep recursive forecasting with RandomForestRegressor. We analyze the
+    # performance of each model with RMSE.
+    for state_dataset in datasets_bystate:
+        train, test = train_test_split(state_dataset, test_size=.2)
 
 
 
-
-        else:
-            print("Unable to build model for state:" + datasets_bystate_index[state_index]) + " due to insufficient" \
-                                                                                              "data."
-
-    responses_bystate[state_index] = timestamp_models
-
-    return responses_bystate
-
-    # print(dataset_time_series)
+    return datasets_bystate_index, datasets_bystate
 
 
 def main():
-    pd.set_option('display.max_rows', 500)
+    pd.set_option('display.max_rows', None)
     pd.set_option('display.max_columns', None)
 
     # Dataset paths
     timeseries_cases_path = os.path.join('Covid-19 Data', 'time_series_covid19_confirmed_US.csv')
     timeseries_deaths_path = os.path.join('Covid-19 Data', 'time_series_covid19_deaths_US.csv')
 
-    # Retrieve data from GitHub of Johns Hopkins and New York Times
+    # Retrieve data from GitHub of Johns Hopkins
     retrieve_data(timeseries_cases_path, timeseries_deaths_path)
 
     # Making data frames from csv's
     timeseries_cases_dataset = pd.read_csv(timeseries_cases_path)
-    timeseries_deaths_dataset = pd.read_csv(timeseries_deaths_path)
 
-    print(timeseries_cases_dataset.groupby('Province_State').nunique())
+    # print(timeseries_cases_dataset.groupby('Province_State').nunique())
 
-    # build_regression_models(timeseries_cases_dataset)
+    datasets_bystate_index, datasets_bystate = build_regression_models(timeseries_cases_dataset)
+
+    current_removed_state_index = 0
+    for i in range(0, len(datasets_bystate)):
+        print(datasets_bystate_index[i])
+        print(datasets_bystate[i])
 
 
 main()
